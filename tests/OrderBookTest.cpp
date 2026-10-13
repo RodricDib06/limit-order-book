@@ -498,3 +498,44 @@ TEST_F(OrderBookTest, LargeQuantitiesDoNotOverflowLevelTotal) {
     ASSERT_EQ(d.size(), 1u);
     EXPECT_EQ(d[0].totalQty, 8'000'000'000ull);
 }
+
+// ---- Order pool / intrusive price level -------------------------------------
+
+TEST(OrderPoolTest, ReleasedSlotsAreReused) {
+    OrderPool pool;
+    const NodeIndex a = pool.allocate(Order{1, Side::Buy, 100, 10});
+    const NodeIndex b = pool.allocate(Order{2, Side::Buy, 100, 10});
+    pool.release(a);
+    EXPECT_EQ(pool.live(), 1u);
+    const NodeIndex c = pool.allocate(Order{3, Side::Buy, 100, 10});
+    EXPECT_EQ(c, a);
+    EXPECT_NE(c, b);
+    EXPECT_EQ(pool.capacity(), 2u);
+    EXPECT_EQ(pool[c].order.id, 3u);
+}
+
+TEST(OrderPoolTest, PriceLevelKeepsFifoThroughEraseAndPush) {
+    OrderPool pool;
+    PriceLevel level;
+    const auto h1 = level.push(pool, Order{1, Side::Sell, 100, 5});
+    const auto h2 = level.push(pool, Order{2, Side::Sell, 100, 6});
+    level.push(pool, Order{3, Side::Sell, 100, 7});
+    level.erase(pool, h2);
+    level.push(pool, Order{4, Side::Sell, 100, 8}); // reuses order 2's slot, but goes to the back
+    std::vector<OrderId> ids;
+    for (auto h = level.frontHandle(); h != kNullNode; h = level.next(pool, h))
+        ids.push_back(pool[h].order.id);
+    EXPECT_EQ(ids, (std::vector<OrderId>{1, 3, 4}));
+    EXPECT_EQ(level.totalQty(), 20u);
+    EXPECT_EQ(level.orderCount(), 3u);
+    level.erase(pool, h1);
+    EXPECT_EQ(pool[level.frontHandle()].order.id, 3u);
+}
+
+TEST_F(OrderBookTest, HeavyChurnReusesPoolSlots) {
+    for (OrderId id = 1; id <= 10'000; ++id) {
+        ASSERT_EQ(buy(id, 10000 - static_cast<Price>(id % 50), 10), Status::Ok);
+        ASSERT_EQ(book.cancel(id), Status::Ok);
+    }
+    EXPECT_TRUE(book.empty());
+}

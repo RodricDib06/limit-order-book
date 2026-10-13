@@ -7,6 +7,7 @@ namespace ob {
 
 void OrderBook::reserve(std::size_t expectedOrders) {
     index_.reserve(expectedOrders);
+    pool_.reserve(expectedOrders);
 }
 
 Status OrderBook::addLimit(const Order& order, std::vector<Trade>& trades) {
@@ -48,7 +49,7 @@ Status OrderBook::cancel(OrderId id) {
         return Status::UnknownId;
 
     const Locator loc = it->second;
-    loc.level->erase(loc.handle);
+    loc.level->erase(pool_, loc.handle);
     index_.erase(it);
     eraseLevelIfEmpty(loc.side, loc.price, *loc.level);
     return Status::Ok;
@@ -62,14 +63,14 @@ Status OrderBook::modify(OrderId id, Qty newQty) {
         return Status::UnknownId;
 
     Locator& loc = it->second;
-    const Qty current = loc.handle->qty;
+    const Qty current = pool_[loc.handle].order.qty;
     if (newQty <= current) {
-        loc.level->reduce(loc.handle, current - newQty); // keeps time priority
+        loc.level->reduce(pool_, loc.handle, current - newQty); // keeps time priority
     } else {
-        Order updated = *loc.handle; // an increase loses time priority
+        Order updated = pool_[loc.handle].order; // an increase loses time priority
         updated.qty = newQty;
-        loc.level->erase(loc.handle);
-        loc.handle = loc.level->push(updated);
+        loc.level->erase(pool_, loc.handle);
+        loc.handle = loc.level->push(pool_, updated);
     }
     return Status::Ok;
 }
@@ -136,7 +137,7 @@ std::optional<Order> OrderBook::find(OrderId id) const {
     auto it = index_.find(id);
     if (it == index_.end())
         return std::nullopt;
-    return *it->second.handle;
+    return pool_[it->second.handle].order;
 }
 
 std::size_t OrderBook::levelCount(Side side) const noexcept {
@@ -163,7 +164,8 @@ Qty OrderBook::match(Book& book, Side aggressor, OrderId id, Qty qty, std::optio
 
         PriceLevel& level = levelIt->second;
         while (qty > 0 && !level.empty()) {
-            Order& resting = level.front();
+            const PriceLevel::Handle h = level.frontHandle();
+            const Order& resting = pool_[h].order;
             const Qty fill = std::min(qty, resting.qty);
             if (aggressor == Side::Buy)
                 trades.push_back(Trade{id, resting.id, levelPrice, fill});
@@ -173,9 +175,9 @@ Qty OrderBook::match(Book& book, Side aggressor, OrderId id, Qty qty, std::optio
 
             if (fill == resting.qty) {
                 index_.erase(resting.id);
-                level.erase(level.frontHandle());
+                level.erase(pool_, h);
             } else {
-                level.reduce(level.frontHandle(), fill);
+                level.reduce(pool_, h, fill);
             }
         }
         if (level.empty())
@@ -186,7 +188,7 @@ Qty OrderBook::match(Book& book, Side aggressor, OrderId id, Qty qty, std::optio
 
 void OrderBook::rest(const Order& order) {
     PriceLevel* level = order.side == Side::Buy ? &bids_[order.price] : &asks_[order.price];
-    auto handle = level->push(order);
+    auto handle = level->push(pool_, order);
     index_.emplace(order.id, Locator{order.side, order.price, level, handle});
 }
 
@@ -211,7 +213,9 @@ bool OrderBook::checkSide(const Book& book, Side side, std::size_t& orders,
         if (level.empty())
             return fail("empty price level at " + std::to_string(price));
         std::uint64_t sum = 0;
-        for (const Order& o : level) {
+        std::size_t count = 0;
+        for (auto h = level.frontHandle(); h != kNullNode; h = level.next(pool_, h)) {
+            const Order& o = pool_[h].order;
             if (o.qty == 0)
                 return fail("zero-quantity order " + std::to_string(o.id));
             if (o.price != price || o.side != side)
@@ -219,11 +223,14 @@ bool OrderBook::checkSide(const Book& book, Side side, std::size_t& orders,
             auto it = index_.find(o.id);
             if (it == index_.end())
                 return fail("order " + std::to_string(o.id) + " missing from index");
-            if (&*it->second.handle != &o || it->second.level != &level)
+            if (it->second.handle != h || it->second.level != &level)
                 return fail("stale locator for order " + std::to_string(o.id));
             sum += o.qty;
-            ++orders;
+            ++count;
         }
+        orders += count;
+        if (count != level.orderCount())
+            return fail("level order count mismatch at " + std::to_string(price));
         if (sum != level.totalQty())
             return fail("level total mismatch at " + std::to_string(price));
     }
@@ -234,7 +241,7 @@ bool OrderBook::checkInvariants(std::string* why) const {
     std::size_t orders = 0;
     if (!checkSide(bids_, Side::Buy, orders, why) || !checkSide(asks_, Side::Sell, orders, why))
         return false;
-    if (orders != index_.size()) {
+    if (orders != index_.size() || orders != pool_.live()) {
         if (why)
             *why = "index size does not match resting orders";
         return false;

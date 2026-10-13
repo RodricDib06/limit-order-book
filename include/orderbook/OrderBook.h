@@ -1,5 +1,6 @@
 #pragma once
 
+#include "orderbook/OrderPool.h"
 #include "orderbook/PriceLevel.h"
 #include "orderbook/Types.h"
 
@@ -19,7 +20,7 @@ namespace ob {
 // Rejected operations leave the book (and the buffer) untouched.
 class OrderBook {
 public:
-    // Pre-size the order index for the expected number of live orders.
+    // Pre-size the order index and node pool for the expected number of live orders.
     void reserve(std::size_t expectedOrders);
 
     // Match a limit order, then rest any unfilled remainder in the book.
@@ -81,6 +82,7 @@ private:
     Bids bids_;
     Asks asks_;
     std::unordered_map<OrderId, Locator> index_;
+    OrderPool pool_; // storage for every resting order
 };
 
 } // namespace ob
