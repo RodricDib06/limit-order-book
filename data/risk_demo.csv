@@ -1,0 +1,30 @@
+type,id,side,price,qty,account
+# Risk demo: every pre-trade check and the automatic kill switch.
+# Account limits: dollar amounts in $, band in basis points (500 = 5%).
+account,alice,maxqty=500,maxpos=300,maxloss=400,band=500
+account,bob,maxqty=1000,maxpos=1000
+account,carol,credit=20000
+account,mm,stp=off
+# A market maker quotes both sides
+limit,1,buy,99.00,500,mm
+limit,2,sell,101.00,500,mm
+# alice buys 200 @ 101 and places a take-profit sell @ 104
+limit,3,buy,101.00,200,alice
+limit,4,sell,104.00,100,alice
+# Fat finger: 600 shares is above alice's 500-share order limit
+limit,5,buy,101.00,600,alice
+# Position limit: 200 held + 150 more would pass her 300-share limit
+limit,6,buy,101.00,150,alice
+# Price band: 120.00 is more than 5% away from the last trade (101.00)
+limit,7,sell,120.00,10,alice
+# Self-trade prevention: alice bids 100, then a sell @ 100 would hit her own bid
+limit,8,buy,100.00,50,alice
+limit,9,sell,100.00,50,alice
+# Credit limit: carol may keep at most $20,000 of resting orders
+limit,10,buy,98.00,150,carol
+limit,11,buy,97.00,100,carol
+# The market drops: bob sells 400 at market. alice's bid fills, the price falls
+# to 99.00, her loss passes $400, and the kill switch cancels her take-profit order
+market,12,sell,,400,bob
+# alice is now blocked
+limit,13,buy,99.00,10,alice

@@ -129,7 +129,80 @@ std::string formatPrice(Price ticks) {
            std::to_string(cents);
 }
 
-MatchingEngine::MatchingEngine(std::ostream& out) : out_(out) {}
+bool parseLimits(const std::vector<std::string_view>& settings, RiskLimits& limits) {
+    RiskLimits next = limits;
+    for (std::string_view kv : settings) {
+        const std::size_t eq = kv.find('=');
+        if (eq == std::string_view::npos)
+            return false;
+        const std::string key = lower(trim(kv.substr(0, eq)));
+        const std::string_view value = trim(kv.substr(eq + 1));
+        if (key == "maxqty") {
+            auto v = parseUnsigned<Qty>(value);
+            if (!v)
+                return false;
+            next.maxOrderQty = *v;
+        } else if (key == "maxpos") {
+            auto v = parseUnsigned<std::uint32_t>(value);
+            if (!v)
+                return false;
+            next.maxPosition = *v;
+        } else if (key == "band") {
+            auto v = parseUnsigned<std::uint32_t>(value);
+            if (!v)
+                return false;
+            next.priceBandBps = *v;
+        } else if (key == "maxvalue" || key == "credit" || key == "maxloss") {
+            auto v = parsePrice(value); // dollars -> cents
+            if (!v || *v < 0)
+                return false;
+            (key == "maxvalue" ? next.maxOrderNotional
+             : key == "credit" ? next.maxOpenNotional
+                               : next.maxLoss) = *v;
+        } else if (key == "stp") {
+            const std::string v = lower(value);
+            if (v != "on" && v != "off")
+                return false;
+            next.selfTradePrevention = v == "on";
+        } else {
+            return false;
+        }
+    }
+    limits = next;
+    return true;
+}
+
+MatchingEngine::MatchingEngine(std::ostream& out)
+    : house_(risk_.addAccount("house")), current_(house_), out_(out) {}
+
+std::string MatchingEngine::tag(AccountId account) const {
+    return account == house_ ? std::string() : " [" + risk_.snapshot(account).name + "]";
+}
+
+bool MatchingEngine::configureAccount(std::string_view name,
+                                      const std::vector<std::string_view>& settings) {
+    auto id = risk_.findAccount(name);
+    // New trader accounts start with self-trade prevention on.
+    RiskLimits limits = id ? risk_.snapshot(*id).limits : RiskLimits{};
+    if (!id)
+        limits.selfTradePrevention = true;
+    if (!parseLimits(settings, limits))
+        return false;
+    if (!id)
+        id = risk_.addAccount(std::string(name), limits);
+    else
+        risk_.setLimits(*id, limits);
+    current_ = *id;
+    out_ << "ACCOUNT  " << name << " ready\n";
+    reportKills();
+    return true;
+}
+
+void MatchingEngine::reportKills() {
+    for (const KillEvent& k : risk_.lastKills())
+        out_ << "KILLED  " << tag(k.account) << ' ' << k.reason << ", " << k.ordersCancelled
+             << " order(s) cancelled, account blocked\n";
+}
 
 void MatchingEngine::noteId(OrderId id) {
     if (id >= nextId_)
@@ -143,47 +216,52 @@ void MatchingEngine::reportTrades() {
     totalTrades_ += trades_.size();
 }
 
-void MatchingEngine::reportReject(OrderId id, Status status) {
-    out_ << "REJECTED #" << id << ": " << toString(status) << '\n';
+void MatchingEngine::reportReject(AccountId account, OrderId id, Status status) {
+    out_ << "REJECTED #" << id << tag(account) << ": " << toString(status) << '\n';
 }
 
-void MatchingEngine::submitLimit(OrderId id, Side side, Price price, Qty qty) {
+void MatchingEngine::submitLimit(AccountId account, OrderId id, Side side, Price price, Qty qty) {
     trades_.clear();
-    const Status st = book_.addLimit(Order{id, side, price, qty}, trades_);
+    const Status st = risk_.submitLimit(account, Order{id, side, price, qty}, trades_);
     if (st != Status::Ok)
-        return reportReject(id, st);
-    out_ << "ACCEPTED #" << id << ' ' << toString(side) << ' ' << qty << " @ " << formatPrice(price)
-         << '\n';
+        return reportReject(account, id, st);
+    out_ << "ACCEPTED #" << id << tag(account) << ' ' << toString(side) << ' ' << qty << " @ "
+         << formatPrice(price) << '\n';
     reportTrades();
-    if (auto resting = book_.find(id))
+    if (auto resting = book().find(id))
         out_ << "RESTING  #" << id << ' ' << resting->qty << " @ " << formatPrice(price) << '\n';
+    reportKills();
 }
 
-void MatchingEngine::submitMarket(OrderId id, Side side, Qty qty) {
+void MatchingEngine::submitMarket(AccountId account, OrderId id, Side side, Qty qty) {
     trades_.clear();
-    const Status st = book_.addMarket(id, side, qty, trades_);
+    const Status st = risk_.submitMarket(account, id, side, qty, trades_);
     if (st != Status::Ok)
-        return reportReject(id, st);
-    out_ << "ACCEPTED #" << id << ' ' << toString(side) << ' ' << qty << " @ MARKET\n";
+        return reportReject(account, id, st);
+    out_ << "ACCEPTED #" << id << tag(account) << ' ' << toString(side) << ' ' << qty
+         << " @ MARKET\n";
     reportTrades();
     Qty filled = 0;
     for (const Trade& t : trades_)
         filled += t.qty;
     if (filled < qty)
         out_ << "DROPPED  #" << id << ' ' << (qty - filled) << " unfilled\n";
+    reportKills();
 }
 
 void MatchingEngine::submitCancel(OrderId id) {
-    const Status st = book_.cancel(id);
+    const AccountId owner = risk_.ownerOf(id).value_or(house_);
+    const Status st = risk_.cancel(id);
     if (st != Status::Ok)
-        return reportReject(id, st);
+        return reportReject(owner, id, st);
     out_ << "CANCELED #" << id << '\n';
 }
 
 void MatchingEngine::submitModify(OrderId id, Qty qty) {
-    const Status st = book_.modify(id, qty);
+    const AccountId owner = risk_.ownerOf(id).value_or(house_);
+    const Status st = risk_.modify(id, qty);
     if (st != Status::Ok)
-        return reportReject(id, st);
+        return reportReject(owner, id, st);
     out_ << "MODIFIED #" << id << " qty " << qty << '\n';
 }
 
@@ -215,13 +293,13 @@ bool MatchingEngine::execute(std::string_view line) {
         if (!qty) {
             usage("expected: buy|sell <qty> [@ <price>]");
         } else if (w.size() == 2 || (w.size() == 3 && lower(w[2]) == "market")) {
-            submitMarket(nextId_++, *side, *qty);
+            submitMarket(current_, nextId_++, *side, *qty);
         } else if (w.size() == 4 && w[2] == "@") {
             auto price = parsePrice(w[3]);
             if (!price)
                 usage("bad price");
             else
-                submitLimit(nextId_++, *side, *price, *qty);
+                submitLimit(current_, nextId_++, *side, *price, *qty);
         } else {
             usage("expected: buy|sell <qty> [@ <price>]");
         }
@@ -238,6 +316,34 @@ bool MatchingEngine::execute(std::string_view line) {
             usage("expected: modify <id> <qty>");
         else
             submitModify(*id, *qty);
+    } else if (cmd == "account") {
+        if (w.size() < 2)
+            usage("expected: account <name> [key=value ...]");
+        else if (!configureAccount(w[1], {w.begin() + 2, w.end()}))
+            usage("bad limit; keys: maxqty maxvalue maxpos credit band maxloss stp");
+    } else if (cmd == "use") {
+        auto id = w.size() == 2 ? risk_.findAccount(w[1]) : std::nullopt;
+        if (!id) {
+            usage("expected: use <existing account>");
+        } else {
+            current_ = *id;
+            out_ << "USING   " << w[1] << '\n';
+        }
+    } else if (cmd == "risk") {
+        printRisk();
+    } else if (cmd == "kill" || cmd == "unblock") {
+        auto id = w.size() == 2 ? risk_.findAccount(w[1]) : std::nullopt;
+        if (!id) {
+            usage("expected: kill|unblock <account>");
+        } else if (cmd == "kill") {
+            const std::size_t n = risk_.kill(*id, "manual kill switch");
+            out_ << "KILLED   [" << w[1] << "] manual kill switch, " << n
+                 << " order(s) cancelled, account blocked\n";
+        } else if (risk_.unblock(*id) == Status::Ok) {
+            out_ << "UNBLOCKED [" << w[1] << "]\n";
+        } else {
+            out_ << "ERROR: " << w[1] << " is still past its loss limit; raise maxloss first\n";
+        }
     } else {
         usage("unknown command");
     }
@@ -254,10 +360,22 @@ bool MatchingEngine::executeCsvLine(std::string_view line) {
         return true; // header row
 
     auto field = [&f](std::size_t i) { return i < f.size() ? f[i] : std::string_view{}; };
+    if (type == "account") {
+        if (field(1).empty())
+            return false;
+        return configureAccount(field(1), {f.begin() + 2, f.end()});
+    }
     auto id = parseUnsigned<OrderId>(field(1));
     if (!id)
         return false;
     noteId(*id);
+    AccountId account = house_;
+    if (!field(5).empty()) {
+        auto found = risk_.findAccount(field(5));
+        if (!found)
+            return false;
+        account = *found;
+    }
 
     if (type == "limit") {
         auto side = parseSide(field(2));
@@ -265,13 +383,13 @@ bool MatchingEngine::executeCsvLine(std::string_view line) {
         auto qty = parseUnsigned<Qty>(field(4));
         if (!side || !price || !qty)
             return false;
-        submitLimit(*id, *side, *price, *qty);
+        submitLimit(account, *id, *side, *price, *qty);
     } else if (type == "market") {
         auto side = parseSide(field(2));
         auto qty = parseUnsigned<Qty>(field(4));
         if (!side || !qty)
             return false;
-        submitMarket(*id, *side, *qty);
+        submitMarket(account, *id, *side, *qty);
     } else if (type == "cancel") {
         submitCancel(*id);
     } else if (type == "modify") {
@@ -299,14 +417,14 @@ void MatchingEngine::printBook(std::size_t levels) const {
         row(s.str());
     };
 
-    const auto asks = book_.depth(Side::Sell, levels);
-    const auto bids = book_.depth(Side::Buy, levels);
+    const auto asks = book().depth(Side::Sell, levels);
+    const auto bids = book().depth(Side::Buy, levels);
     out_ << "+" << std::string(kWidth, '-') << "+\n";
     if (asks.empty())
         row("ASK    (empty)");
     for (auto it = asks.rbegin(); it != asks.rend(); ++it)
         levelRow("ASK ", *it);
-    if (auto spread = book_.spread())
+    if (auto spread = book().spread())
         row("------- spread " + formatPrice(*spread) + " -------");
     else
         row("----------------------------");
@@ -315,6 +433,25 @@ void MatchingEngine::printBook(std::size_t levels) const {
     if (bids.empty())
         row("BID    (empty)");
     out_ << "+" << std::string(kWidth, '-') << "+\n";
+}
+
+void MatchingEngine::printRisk() const {
+    const auto mark = risk_.lastTradePrice();
+    out_ << "Mark price: " << (mark ? formatPrice(*mark) : std::string("none (no trades yet)"))
+         << "   P&L in dollars\n";
+    out_ << std::left << std::setw(10) << "ACCOUNT" << std::right << std::setw(8) << "POS"
+         << std::setw(10) << "AVG COST" << std::setw(11) << "REALIZED" << std::setw(11) << "UNREAL."
+         << std::setw(11) << "TOTAL" << std::setw(12) << "OPEN B/S"
+         << "  STATUS\n";
+    for (AccountId id = 0; id < risk_.accountCount(); ++id) {
+        const AccountSnapshot a = risk_.snapshot(id);
+        const std::string open = std::to_string(a.openBuyQty) + "/" + std::to_string(a.openSellQty);
+        out_ << std::left << std::setw(10) << a.name << std::right << std::setw(8) << a.position
+             << std::setw(10) << (a.position ? formatPrice(a.avgCost) : "-") << std::setw(11)
+             << formatPrice(a.realizedPnl) << std::setw(11) << formatPrice(a.unrealizedPnl)
+             << std::setw(11) << formatPrice(a.totalPnl) << std::setw(12) << open << "  "
+             << (a.blocked ? "BLOCKED (" + a.blockReason + ")" : std::string("active")) << '\n';
+    }
 }
 
 void MatchingEngine::printHelp(std::ostream& out) {
@@ -326,6 +463,16 @@ void MatchingEngine::printHelp(std::ostream& out) {
            "  cancel <id>            cancel a resting order\n"
            "  modify <id> <qty>      change a resting order's quantity\n"
            "  book                   show the top 5 levels per side\n"
+           "\n"
+           "Risk (orders are placed for the current account; default 'house' has no limits):\n"
+           "  account <name> [k=v..] create/update an account and switch to it, e.g.\n"
+           "                         account alice maxqty=500 maxpos=1000 maxloss=2000 band=500\n"
+           "                         keys: maxqty, maxpos (shares), maxvalue, credit, maxloss\n"
+           "                         (dollars), band (basis points), stp=on|off\n"
+           "  use <name>             switch to an existing account\n"
+           "  risk                   positions, P&L, open orders, and status per account\n"
+           "  kill <name>            kill switch: cancel the account's orders and block it\n"
+           "  unblock <name>         allow a blocked account to trade again\n"
            "  help                   show this message\n"
            "  quit                   exit\n";
 }

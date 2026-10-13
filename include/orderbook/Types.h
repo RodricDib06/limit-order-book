@@ -47,6 +47,16 @@ enum class Status : std::uint8_t {
     InvalidPrice,    // zero or negative price
     DuplicateId,     // an order with this ID is already live in the book
     UnknownId,       // no live order with this ID (never existed, filled, or cancelled)
+
+    // Pre-trade risk rejections (RiskEngine)
+    UnknownAccount,    // no such trading account
+    AccountBlocked,    // account was stopped by the kill switch
+    RiskOrderQty,      // order quantity above the account's per-order limit
+    RiskOrderNotional, // order value above the account's per-order limit
+    RiskPriceBand,     // limit price too far from the reference price
+    RiskPosition,      // could take the position past the account's limit
+    RiskOpenNotional,  // resting order value would exceed the credit limit
+    RiskSelfTrade,     // would trade against the account's own resting order
 };
 
 constexpr const char* toString(Side s) noexcept {
@@ -65,6 +75,22 @@ constexpr const char* toString(Status s) noexcept {
         return "duplicate order id";
     case Status::UnknownId:
         return "unknown order id";
+    case Status::UnknownAccount:
+        return "unknown account";
+    case Status::AccountBlocked:
+        return "risk: account is blocked (kill switch)";
+    case Status::RiskOrderQty:
+        return "risk: order quantity above limit";
+    case Status::RiskOrderNotional:
+        return "risk: order value above limit";
+    case Status::RiskPriceBand:
+        return "risk: price outside allowed band";
+    case Status::RiskPosition:
+        return "risk: position limit would be exceeded";
+    case Status::RiskOpenNotional:
+        return "risk: credit limit would be exceeded";
+    case Status::RiskSelfTrade:
+        return "risk: would trade with own order";
     }
     return "unknown status";
 }

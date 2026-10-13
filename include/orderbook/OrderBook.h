@@ -57,6 +57,17 @@ public:
     // Full structural self-check, used by tests. Returns false and fills `why` on failure.
     bool checkInvariants(std::string* why = nullptr) const;
 
+    // Walk the resting orders an incoming order would trade against, in match
+    // order, without changing the book. `visit(const Order& resting, Qty fill)`
+    // returns false to stop early. Used for pre-trade checks.
+    template <class Visit>
+    void simulateMatch(Side side, std::optional<Price> limit, Qty qty, Visit&& visit) const {
+        if (side == Side::Buy)
+            simulate(asks_, limit, qty, visit);
+        else
+            simulate(bids_, limit, qty, visit);
+    }
+
 private:
     using Bids = std::map<Price, PriceLevel, std::greater<Price>>; // begin() = highest bid
     using Asks = std::map<Price, PriceLevel, std::less<Price>>;    // begin() = lowest ask
@@ -72,6 +83,23 @@ private:
     template <class Book>
     Qty match(Book& book, Side aggressor, OrderId id, Qty qty, std::optional<Price> limit,
               std::vector<Trade>& trades);
+
+    template <class Book, class Visit>
+    void simulate(const Book& book, std::optional<Price> limit, Qty qty, Visit& visit) const {
+        for (auto it = book.begin(); it != book.end() && qty > 0; ++it) {
+            if (limit && book.key_comp()(*limit, it->first))
+                return;
+            const PriceLevel& level = it->second;
+            for (auto h = level.frontHandle(); h != kNullNode && qty > 0;
+                 h = level.next(pool_, h)) {
+                const Order& resting = pool_[h].order;
+                const Qty fill = qty < resting.qty ? qty : resting.qty;
+                if (!visit(resting, fill))
+                    return;
+                qty -= fill;
+            }
+        }
+    }
 
     void rest(const Order& order);
     void eraseLevelIfEmpty(Side side, Price price, const PriceLevel& level);

@@ -23,6 +23,7 @@ endif()
 add_library(orderbook
   src/OrderBook.cpp
   src/MatchingEngine.cpp
+  src/RiskEngine.cpp
 )
 target_include_directories(orderbook PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
 target_compile_options(orderbook PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion)
@@ -49,6 +50,7 @@ if(ORDERBOOK_BUILD_TESTS)
     tests/OrderBookTest.cpp
     tests/MatchingEngineTest.cpp
     tests/StressTest.cpp
+    tests/RiskEngineTest.cpp
   )
   target_link_libraries(orderbook_tests PRIVATE orderbook GTest::gtest_main)
   target_compile_options(orderbook_tests PRIVATE -Wall -Wextra)
@@ -57,6 +59,8 @@ if(ORDERBOOK_BUILD_TESTS)
 
   add_test(NAME cli_sample_csv
     COMMAND orderbook_cli ${CMAKE_CURRENT_SOURCE_DIR}/data/sample_orders.csv)
+  add_test(NAME cli_risk_demo_csv
+    COMMAND orderbook_cli ${CMAKE_CURRENT_SOURCE_DIR}/data/risk_demo.csv)
 endif()
 
 # ---- Benchmark -------------------------------------------------------------

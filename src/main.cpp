@@ -2,6 +2,7 @@
 //
 //   orderbook                       interactive mode (type 'help')
 //   orderbook data/sample_orders.csv   replay a CSV file and print trades + final book
+//   orderbook data/risk_demo.csv       replay with trader accounts and risk limits
 
 #include "orderbook/MatchingEngine.h"
 
@@ -14,10 +15,12 @@
 namespace {
 
 void usage(const char* prog) {
-    std::cout << "Usage:\n"
-              << "  " << prog << "              interactive mode\n"
-              << "  " << prog << " <file.csv>   replay orders from a CSV file\n\n"
-              << "CSV columns: type,id,side,price,qty  (type = limit|market|cancel|modify)\n\n";
+    std::cout
+        << "Usage:\n"
+        << "  " << prog << "              interactive mode\n"
+        << "  " << prog << " <file.csv>   replay orders from a CSV file\n\n"
+        << "CSV columns: type,id,side,price,qty[,account]  (type = limit|market|cancel|modify)\n"
+        << "Account rows: account,<name>[,key=value...]\n\n";
     ob::MatchingEngine::printHelp(std::cout);
 }
 
@@ -40,6 +43,10 @@ int runCsv(const char* path) {
     }
     std::cout << '\n';
     engine.printBook();
+    if (engine.risk().accountCount() > 1) {
+        std::cout << '\n';
+        engine.printRisk();
+    }
     std::cout << engine.totalTrades() << " trades, " << engine.book().orderCount()
               << " orders resting\n";
     return bad == 0 ? 0 : 2;
