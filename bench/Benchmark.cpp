@@ -76,6 +76,7 @@ struct RunResult {
 
 RunResult runOnce(const std::vector<Op>& ops) {
     OrderBook book;
+    book.reserve(ops.size()); // upper bound on live orders: no rehashing in the timed loop
     std::size_t tradeCount = 0;
 
     const auto start = std::chrono::steady_clock::now();
