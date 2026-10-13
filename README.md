@@ -1,6 +1,6 @@
 # Limit Order Book & Matching Engine
 
-[![CI](https://github.com/RodricDib06/order-book/actions/workflows/ci.yml/badge.svg)](https://github.com/RodricDib06/order-book/actions/workflows/ci.yml)
+[![CI](https://github.com/RodricDib06/limit-order-book/actions/workflows/ci.yml/badge.svg)](https://github.com/RodricDib06/limit-order-book/actions/workflows/ci.yml)
 
 A C++17 limit order book that accepts buy and sell orders, matches them by **price-time priority**, and reports every trade. It handles **~20 million orders per second** on one core (Apple M2).
 
