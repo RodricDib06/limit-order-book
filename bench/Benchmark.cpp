@@ -78,10 +78,12 @@ RunResult runOnce(const std::vector<Op>& ops) {
     OrderBook book;
     book.reserve(ops.size()); // upper bound on live orders: no rehashing in the timed loop
     std::size_t tradeCount = 0;
+    std::vector<Trade> trades; // one buffer reused for every order
+    trades.reserve(1024);
 
     const auto start = std::chrono::steady_clock::now();
     for (const Op& op : ops) {
-        std::vector<Trade> trades;
+        trades.clear();
         switch (op.type) {
         case OpType::Limit:
             book.addLimit(Order{op.id, op.side, op.price, op.qty}, trades);
