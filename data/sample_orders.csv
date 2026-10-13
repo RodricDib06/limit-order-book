@@ -1,0 +1,28 @@
+type,id,side,price,qty
+# Build an ask ladder
+limit,1,sell,101.00,50
+limit,2,sell,102.00,30
+limit,3,sell,103.00,40
+# Bids below it: no cross, everything rests
+limit,4,buy,99.00,25
+limit,5,buy,100.00,60
+limit,6,buy,100.00,15
+# Worked example: buy 70 @ 102 fills 50 @ 101, then 20 @ 102; 10 stay at 102
+limit,7,sell,104.00,20
+limit,8,buy,102.00,70
+# Time priority: order 5 arrived before order 6 at 100.00, so it fills first
+limit,9,sell,100.00,70
+# Cancel and modify resting orders
+cancel,3,,,
+modify,4,,,10
+# Market buy sweeps 102 and 104; the rest is dropped
+market,10,buy,,50
+# Validation: zero quantity, duplicate id, unknown id
+limit,11,buy,98.00,0
+limit,6,buy,98.00,5
+cancel,999,,,
+# More liquidity on both sides for the final book
+limit,12,sell,101.50,25
+limit,13,sell,101.50,40
+limit,14,sell,103.25,60
+limit,15,buy,100.00,35
